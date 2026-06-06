@@ -10,7 +10,16 @@ DJICOT has the following built-in configuration parameters:
 * **`FEED_URL`**:
     * Default: ``tcp://192.168.1.10:41030``
 
-    AntSDR source URL. 
+    AntSDR source URL. DJICOT selects the input worker from the URL:
+
+    * ``tcp://host:41030`` — binary DJI Drone ID frames (default AntSDR port)
+    * ``tcp://host:52002`` — text CSV ``dji_O,...`` debug stream
+    * ``file:///path/to/log`` — offline replay of a captured text log
+
+* **`FEED_FORMAT`**:
+    * Default: unset (auto-detect from ``FEED_URL``)
+
+    Set to ``text`` to force the text CSV parser when using a non-standard TCP port.
 
 * **`COT_TYPE`**:
     * Default: ``a-u-A-M-H-Q``
@@ -27,18 +36,21 @@ DJICOT has the following built-in configuration parameters:
 
     Longitude of AntSDR sensor. If set, sends periodic sensor CoT & used for 'Range' detections.
 
-** **`SENSOR_ID`**:
+* **`SENSOR_ID`**:
     * Default: ``DJICOT``
 
     Unique identifier for sensor. Added as sensor metadata in __cuas CoT Element.
 
-** **`SENSOR_COT_TYPE`**:
+* **`SENSOR_COT_TYPE`**:
     * Default: ``a-f-G-E-S-E``
 
     Cursor on Target (CoT) Event type for sensor.
 
+* **`HIDE_INVALID_DATA`**:
+    * Default: ``0``
 
-Additional configuration parameters, including TAK Server configuration, are included in the [PyTAK Configuration](https://pytak.readthedocs.io/en/latest/configuration/) documentation.
+    When set, suppresses CoT for legs with invalid or missing coordinates.
 
+Additional configuration parameters, including TAK Server TLS, certificate enrollment, and ``PYTAK_NO_HELLO``, are included in the [PyTAK Configuration](https://pytak.readthedocs.io/en/latest/configuration/) documentation.
 
-
+See also: [example-config.ini](https://github.com/snstac/djicot/blob/main/example-config.ini).

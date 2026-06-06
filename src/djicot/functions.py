@@ -25,11 +25,13 @@ import xml.etree.ElementTree as ET
 
 from configparser import SectionProxy
 from typing import Optional, Set, Union
+from urllib.parse import urlparse
 
 import pytak
 import djicot
 
 from .dji_functions import parse_frame, parse_data
+from .text_parser import parse_text_line
 
 
 APP_NAME = "djicot"
@@ -39,28 +41,50 @@ if Debug:
     Logger.setLevel(logging.DEBUG)
 
 
+def _config_bool(config: Union[SectionProxy, dict, None], key: str, default: bool = False) -> bool:
+    if not config:
+        return default
+    if hasattr(config, "getboolean"):
+        try:
+            return config.getboolean(key, fallback=default)
+        except ValueError:
+            return default
+    val = config.get(key, default)
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("1", "true", "yes", "on")
+
+
+def _feed_uses_text(config: SectionProxy) -> bool:
+    feed_format = str(config.get("FEED_FORMAT", "")).lower()
+    if feed_format == "text":
+        return True
+    feed_url = str(config.get("FEED_URL", djicot.DEFAULT_FEED_URL)).lower()
+    if feed_url.startswith("file://"):
+        return True
+    parsed = urlparse(feed_url)
+    if parsed.scheme == "file":
+        return True
+    if parsed.port == djicot.DEFAULT_TEXT_PORT:
+        return True
+    return False
+
+
 def create_tasks(config: SectionProxy, clitool: pytak.CLITool) -> Set[pytak.Worker,]:
-    """Create specific coroutine task set for this application.
-
-    Parameters
-    ----------
-    config : `SectionProxy`
-        Configuration options & values.
-    clitool : `pytak.CLITool`
-        A PyTAK Worker class instance.
-
-    Returns
-    -------
-    `set`
-        Set of PyTAK Worker classes for this application.
-    """
+    """Create specific coroutine task set for this application."""
     tasks = set()
-
     net_queue: asyncio.Queue = asyncio.Queue()
 
-    tasks.add(djicot.DJIWorker(clitool.tx_queue, config, net_queue))
-    tasks.add(djicot.NetWorker(net_queue, config))
+    if _feed_uses_text(config):
+        feed_url = str(config.get("FEED_URL", djicot.DEFAULT_FEED_URL)).lower()
+        if feed_url.startswith("file://") or urlparse(feed_url).scheme == "file":
+            tasks.add(djicot.FileReplayWorker(net_queue, config))
+        else:
+            tasks.add(djicot.TextNetWorker(net_queue, config))
+    else:
+        tasks.add(djicot.BinaryNetWorker(net_queue, config))
 
+    tasks.add(djicot.DJIWorker(clitool.tx_queue, config, net_queue))
     return tasks
 
 
@@ -84,6 +108,7 @@ def dji_home_to_cot(
     """Convert DJI Home data to CoT"""
     return gen_dji_cot(data, config, "home")
 
+
 def is_valid_lat_lon(lat, lon) -> bool:
     """Validate latitude and longitude values."""
     try:
@@ -96,37 +121,35 @@ def is_valid_lat_lon(lat, lon) -> bool:
         return False
 
 
+def _append_dh_uas(detail: ET.Element, data: dict, config: dict, uas_sn: str) -> None:
+    sensor_id = str(config.get("SENSOR_ID", djicot.DEFAULT_SENSOR_ID))
+    dh_uas = ET.Element("__dh-uas")
+
+    metadata = ET.Element("metadata")
+    metadata.set("serialNumber", str(uas_sn))
+    metadata.set("description", str(data.get("device_type", "")))
+    dh_uas.append(metadata)
+
+    connection_data = ET.Element("connectionData")
+    connection_data.set("receivedBy", sensor_id)
+    connection_data.set("rssi", str(data.get("rssi", "")))
+    connection_data.set("receiverSrc", str(config.get("SENSOR_TYPE", djicot.DEFAULT_SENSOR_TYPE)))
+    dh_uas.append(connection_data)
+
+    kinematic_data = ET.Element("kinematicData")
+    kinematic_data.set("horizontalSpeed", str(data.get("speed_e", "")))
+    kinematic_data.set("verticalSpeed", str(data.get("speed_u", "")))
+    dh_uas.append(kinematic_data)
+
+    detail.append(dh_uas)
+
+
 def gen_dji_cot(  # NOQA pylint: disable=too-many-locals,too-many-branches,too-many-statements
     data, config: Union[SectionProxy, dict, None] = None, leg="uas"
 ) -> Optional[ET.Element]:
-    """
-    Generate a Cursor on Target (CoT) XML Event from DJI data.
-
-    Parameters
-    ----------
-    data : dict
-        Dictionary containing the DJI data.
-    config : Union[SectionProxy, dict, None], optional
-        Configuration settings, by default None.
-    leg : str, optional
-        Specifies the leg type, by default "uas".
-
-    Returns
-    -------
-    Optional[xml.etree.ElementTree.Element]
-        The generated CoT XML ElementTree object, or None if latitude or longitude are missing.
-
-    Notes
-    -----
-    - The function extracts relevant information from the DJI data and config to create a CoT XML element.
-    - If latitude or longitude are missing for the "uas" leg, default sensor coordinates are used.
-    - The function supports debugging output if "DEBUG" is set in the config.
-    - The CoT element includes details such as sensor information, contact callsign, track data, and remarks.
-    - The CoT element is generated using the pytak.gen_cot_xml() function.
-    """
+    """Generate a Cursor on Target (CoT) XML Event from DJI data."""
     config = config or {}
 
-    # Extract relevant info for CoT
     lat = data.get(f"{leg}_lat")
     lon = data.get(f"{leg}_lon")
 
@@ -134,10 +157,13 @@ def gen_dji_cot(  # NOQA pylint: disable=too-many-locals,too-many-branches,too-m
     if not lat_lon_valid:
         lat = None
         lon = None
-    Logger.debug(f"leg={leg} lat={lat} lon={lon}")
+    Logger.debug("leg=%s lat=%s lon=%s", leg, lat, lon)
 
-    if not lat_lon_valid and config.get("HIDE_INVALID_DATA", djicot.DEFAULT_HIDE_INVALID_DATA):
-        Logger.debug(f"Hiding invalid {leg} data")
+    hide_invalid = _config_bool(
+        config, "HIDE_INVALID_DATA", bool(djicot.DEFAULT_HIDE_INVALID_DATA)
+    )
+    if not lat_lon_valid and hide_invalid:
+        Logger.debug("Hiding invalid %s data", leg)
         return None
 
     freq = str(data.get("freq", 0.0))
@@ -147,26 +173,24 @@ def gen_dji_cot(  # NOQA pylint: disable=too-many-locals,too-many-branches,too-m
     uas_type = data.get("device_type", "")
 
     cot_type: str = str(config.get("COT_TYPE", djicot.DEFAULT_COT_TYPE))
-    cot_uid = f"DJI-{uas_sn}"
     if leg == "op" or leg == "home":
         cot_type = str("a-u-G-U-C")
-        cot_uid = f"DJI-{uas_sn}-{leg}"
 
-    callsign = f"DJI {uas_type} {leg} ({uas_sn[-4:]})"
-
-    ce = str(data.get("nac_p", "9999999.0"))
+    cot_uid = f"DJI.{uas_sn}.{leg}"
+    callsign = f"{uas_sn}.{leg}"
+    ce = str(data.get("nac_p", pytak.DEFAULT_COT_VAL))
 
     if not lat_lon_valid:
         if leg == "op" or leg == "home":
-            Logger.debug(f"No {leg} lat/lon")
+            Logger.debug("No %s lat/lon", leg)
             return None
-        elif leg == "uas":
+        if leg == "uas":
             lat = config.get("SENSOR_LAT", djicot.DEFAULT_SENSOR_LAT)
             lon = config.get("SENSOR_LON", djicot.DEFAULT_SENSOR_LON)
             cot_type = str("a-u-A-M-H-Q")
             callsign = f"{callsign} (Range)"
-            ce = 1000.0 * abs(int(rssi))
-            Logger.debug(f"No UAS lat/lon, using sensor lat/lon: {lat}, {lon}")
+            ce = str(1000.0 * abs(int(float(rssi))))
+            Logger.debug("No UAS lat/lon, using sensor lat/lon: %s, %s", lat, lon)
 
     remarks_fields: list = []
 
@@ -198,18 +222,20 @@ def gen_dji_cot(  # NOQA pylint: disable=too-many-locals,too-many-branches,too-m
         cuas.set("serial_valid", "0")
 
     crumbs = ET.Element("__bread_crumbs")
-    crumbs.set("enabled", str(config.get("BREAD_CRUMBS_ENABLED", djicot.DEFAULT_BREAD_CRUMBS_ENABLED)))
+    crumbs.set(
+        "enabled",
+        str(config.get("BREAD_CRUMBS_ENABLED", djicot.DEFAULT_BREAD_CRUMBS_ENABLED)),
+    )
 
     contact: ET.Element = ET.Element("contact")
     contact.set("callsign", callsign)
 
     track: ET.Element = ET.Element("track")
-    track.set("course", data.get("course_point", "9999999.0"))
-    track.set("speed", data.get("speed_point", "9999999.0"))
+    track.set("course", data.get("course_point", pytak.DEFAULT_COT_VAL))
+    track.set("speed", data.get("speed_point", pytak.DEFAULT_COT_VAL))
 
     detail = ET.Element("detail")
 
-    # Remarks should always be the first sub-entity within the Detail entity.
     remarks = ET.Element("remarks")
     remarks_fields.append(f"sn={uas_sn}")
     remarks_fields.append(f"({uas_type})")
@@ -226,8 +252,24 @@ def gen_dji_cot(  # NOQA pylint: disable=too-many-locals,too-many-branches,too-m
     detail.append(cuas)
     detail.append(crumbs)
 
-    le = str(data.get("nac_v", "9999999.0"))
-    hae = str(data.get("alt_geom", "9999999.0"))
+    if leg == "uas":
+        op_uid = f"DJI.{uas_sn}.op"
+        link = ET.Element("link")
+        link.set("uid", op_uid)
+        link.set("type", "a-u-G-U-C")
+        link.set("parent_callsign", callsign)
+        link.set("relation", "p-p")
+        detail.append(link)
+
+        creator = ET.Element("creator")
+        creator.set("uid", op_uid)
+        creator.set("callsign", callsign)
+        creator.set("type", "a-u-G-U-C")
+        detail.append(creator)
+        _append_dh_uas(detail, data, config, str(uas_sn))
+
+    le = str(data.get("nac_v", pytak.DEFAULT_COT_VAL))
+    hae = str(data.get("alt_geom", pytak.DEFAULT_COT_VAL))
 
     cot_d = {
         "lat": str(lat),
@@ -241,8 +283,8 @@ def gen_dji_cot(  # NOQA pylint: disable=too-many-locals,too-many-branches,too-m
     }
     cot = pytak.gen_cot_xml(**cot_d)
     cot.set("access", config.get("COT_ACCESS", pytak.DEFAULT_COT_ACCESS))
+    cot.set("qos", "1-r-c")
 
-    # Replace detail element while preserving flow tags
     _detail = cot.find("detail")
     if _detail is not None:
         flowtags = _detail.findall("_flow-tags_")
@@ -256,27 +298,7 @@ def gen_dji_cot(  # NOQA pylint: disable=too-many-locals,too-many-branches,too-m
 def sensor_to_cot(
     data, config: Union[SectionProxy, dict, None] = None
 ) -> Optional[ET.Element]:
-    """Create a CoT Event for the Sensor.
-
-    Parameters
-    ----------
-    data : dict
-        Dictionary containing the sensor data.
-    config : Union[SectionProxy, dict, None], optional
-        Configuration settings, by default None.
-
-    Returns
-    -------
-    Optional[xml.etree.ElementTree.Element]
-        The generated CoT XML ElementTree object, or None if latitude or longitude are missing.
-
-    Notes
-    -----
-    - The function extracts relevant information from the sensor data and config to create a CoT XML element.
-    - If latitude or longitude are missing, the function returns None.
-    - The CoT element includes details such as sensor information, contact callsign, and remarks.
-    - The CoT element is generated using the pytak.gen_cot_xml() function.
-    """
+    """Create a CoT Event for the Sensor."""
     config = config or {}
 
     lat = config.get("SENSOR_LAT", djicot.DEFAULT_SENSOR_LAT)
@@ -309,9 +331,11 @@ def sensor_to_cot(
 
     detail = ET.Element("detail")
 
-    # Remarks should always be the first sub-entity within the Detail entity.
     remarks = ET.Element("remarks")
-    remarks.text = f"sensor_id={sensor_id} sensor_sn={sensor_sn} sensor_type={sensor_type} cot_host_id={cot_host_id}: {data}"
+    remarks.text = (
+        f"sensor_id={sensor_id} sensor_sn={sensor_sn} "
+        f"sensor_type={sensor_type} cot_host_id={cot_host_id}: {data}"
+    )
 
     detail.append(remarks)
     detail.append(contact)
@@ -329,8 +353,8 @@ def sensor_to_cot(
     }
     cot = pytak.gen_cot_xml(**cot_d)
     cot.set("access", config.get("COT_ACCESS", pytak.DEFAULT_COT_ACCESS))
+    cot.set("qos", "1-r-c")
 
-    # Replace detail element while preserving flow tags
     _detail = cot.find("detail")
     if _detail is not None:
         flowtags = _detail.findall("_flow-tags_")
@@ -353,59 +377,56 @@ def xml_to_cot(
     )
 
 
-def handle_frame(
-    frame: bytearray, config: Union[SectionProxy, dict, None] = None
+def handle_parsed_data(
+    parsed_data: dict, config: Union[SectionProxy, dict, None] = None
 ) -> list:
-    """
-    Parse a DJI Drone ID frame and convert the parsed data into CoT (Cursor on Target) event XML bytes.
-
-    Parameters
-    ----------
-    frame : bytearray
-        The raw DJI Drone ID frame to process.
-    config : Union[SectionProxy, dict, None], optional
-        Configuration options and values, by default None.
-
-    Returns
-    -------
-    list
-        List of CoT event XML bytes generated from the parsed DJI Drone ID data.
-
-    Notes
-    -----
-    - This function parses the input frame, extracts the relevant data, and attempts to generate CoT events
-      for UAS, operator, and home positions using the corresponding conversion functions.
-    - If parsing fails or the data is invalid, warnings are logged and an empty list may be returned.
-    """
+    """Generate CoT events from parsed DJI data."""
     config = config or {}
     events = []
-
-    try:
-        package_type, data = parse_frame(frame)
-    except Exception as exc:
-        Logger.warning("Error parsing DJI frame: %s", exc)
-        return events
-
-    if package_type != 0x01:
-        Logger.warning("Invalid DJI package type: %s", package_type)
-        return events
-
-    if not data:
-        Logger.warning("No DJI data")
-        return events
-
-    try:
-        parsed_data = parse_data(data)
-    except Exception as exc:
-        Logger.warning("Error parsing DJI data: %s", exc)
-        return events
-
-    Logger.debug("Parsed DJI data: %s", parsed_data)
-
     funcs = ["dji_uas_to_cot", "dji_op_to_cot", "dji_home_to_cot"]
     for func in funcs:
         event: Optional[bytes] = xml_to_cot(parsed_data, config, func)
         if event:
             events.append(event)
-
     return events
+
+
+def handle_text_line(
+    line: str, config: Union[SectionProxy, dict, None] = None
+) -> list:
+    """Parse an AntSDR text CSV line and return CoT event bytes."""
+    config = config or {}
+    parsed_data = parse_text_line(line)
+    if not parsed_data:
+        return []
+    Logger.debug("Parsed DJI text line: %s", parsed_data)
+    return handle_parsed_data(parsed_data, config)
+
+
+def handle_frame(
+    frame: bytearray, config: Union[SectionProxy, dict, None] = None
+) -> list:
+    """Parse a binary DJI Drone ID frame and return CoT event bytes."""
+    config = config or {}
+
+    try:
+        package_type, data = parse_frame(frame)
+    except Exception as exc:
+        Logger.warning("Error parsing DJI frame: %s", exc)
+        return []
+
+    if package_type != 0x01:
+        Logger.warning("Invalid DJI package type: %s", package_type)
+
+    if not data:
+        Logger.warning("No DJI data")
+        return []
+
+    try:
+        parsed_data = parse_data(data)
+    except Exception as exc:
+        Logger.warning("Error parsing DJI data: %s", exc)
+        parsed_data = {}
+
+    Logger.debug("Parsed DJI data: %s", parsed_data)
+    return handle_parsed_data(parsed_data, config)

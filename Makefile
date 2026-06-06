@@ -17,6 +17,20 @@
 REPO_NAME ?= $(shell echo $(wildcard src/*/__init__.py) | awk -F'/' '{print $$2}')
 SHELL := /bin/bash
 .DEFAULT_GOAL := editable
+PYTHON := python3
+VENV := .venv
+PY := $(VENV)/bin/python3
+PIP := $(VENV)/bin/pip
+RSYNC_HOST ?= beast
+RSYNC_PATH ?= $(CURDIR)
+
+.PHONY: help venv virtualenv rsync test_hardware
+
+help:
+	@echo "Targets:"
+	@echo "  make venv           Create $(VENV)"
+	@echo "  make test_hardware  Run AntSDR integration tests (ANTSDR_HOST required)"
+	@echo "  make rsync          Rsync project to $(RSYNC_HOST):$(RSYNC_PATH)/"
 # postinst = $(wildcard debian/*.postinst.sh)
 # service = $(wildcard debian/*.service)
 
@@ -67,12 +81,23 @@ mypy:
 	mypy --strict .
 
 pytest:
-	pytest
+	$(PYTHON) -m pytest
 
 test: editable install_test_requirements pytest
 
 test_cov:
-	pytest --cov=$(REPO_NAME) --cov-report term-missing
+	$(PYTHON) -m pytest --cov=$(REPO_NAME) --cov-report term-missing
+
+test_hardware:
+	$(PYTHON) -m pytest -m hardware
+
+venv:
+	$(PYTHON) -m venv $(VENV)
+
+virtualenv: venv
+
+rsync:
+	rsync -avz --exclude='.venv' --exclude='__pycache__' --exclude='config.ini' --exclude='certs' $(CURDIR)/ $(RSYNC_HOST):$(RSYNC_PATH)/
 
 black:
 	black .

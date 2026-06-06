@@ -3,4 +3,5 @@ pytest-cov
 pylint
 flake8
 black
-pytak
+pytak >= 7.3.0
+cryptography

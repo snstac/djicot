@@ -20,6 +20,9 @@
 
 # IP address of ANT SDR E200 running DJI Drone ID firmware:
 DEFAULT_FEED_URL: str = "tcp://192.168.1.10:41030"
+DEFAULT_TEXT_FEED_URL: str = "tcp://192.168.1.10:52002"
+DEFAULT_BINARY_PORT: int = 41030
+DEFAULT_TEXT_PORT: int = 52002
 DEFAULT_COT_TYPE: str = "a-u-A-M-H-Q"
 
 DEFAULT_SENSOR_LAT: str = "0.0"

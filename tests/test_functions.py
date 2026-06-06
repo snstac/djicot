@@ -126,7 +126,7 @@ class FunctionsTestCase(unittest.TestCase):
         data[217:225] = struct.pack("d", 1.0)  # speed_u
         data[225:227] = struct.pack("h", -50)  # rssi
 
-        frame[3:5] = struct.pack("H", len(data))  # package_length
+        frame[3:5] = struct.pack("H", len(data) + 5)  # package_length includes header
         frame[5 : 5 + len(data)] = data
 
         config = {
@@ -142,9 +142,9 @@ class FunctionsTestCase(unittest.TestCase):
         }
 
         events = djicot.functions.handle_frame(frame, config)
-        assert len(events) == 1
+        assert len(events) == 3
         for event in events:
-            assert djicot.DEFAULT_COT_TYPE in event.decode("utf-8")
+            assert b"F4XF7249QM06Q26P" in event
 
     def test_handle_frame_invalid_package_type(self):
         """Test handle_frame function with invalid package type."""
@@ -170,7 +170,7 @@ class FunctionsTestCase(unittest.TestCase):
         data[217:225] = struct.pack("d", 1.0)  # speed_u
         data[225:227] = struct.pack("h", -50)  # rssi
 
-        frame[3:5] = struct.pack("H", len(data))  # package_length
+        frame[3:5] = struct.pack("H", len(data) + 5)  # package_length includes header
         frame[5 : 5 + len(data)] = data
 
         config = {
@@ -186,9 +186,9 @@ class FunctionsTestCase(unittest.TestCase):
         }
 
         events = djicot.functions.handle_frame(frame, config)
-        assert len(events) == 1
+        assert len(events) == 3
         for event in events:
-            assert djicot.DEFAULT_COT_TYPE in event.decode("utf-8")
+            assert b"F4XF7249QM06Q26P" in event
 
     def test_handle_frame_invalid_data(self):
         """Test handle_frame function with invalid data."""
@@ -239,7 +239,7 @@ class FunctionsTestCase(unittest.TestCase):
         data[217:225] = struct.pack("d", 100.0)  # speed_u
         data[225:227] = struct.pack("h", -50)  # rssi
 
-        frame[3:5] = struct.pack("H", len(data))  # package_length
+        frame[3:5] = struct.pack("H", len(data) + 5)  # package_length includes header
         frame[5 : 5 + len(data)] = data
         print(frame)
         config = {

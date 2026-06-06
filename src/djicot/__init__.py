@@ -24,10 +24,20 @@ It imports and exposes constants, functions, and classes necessary for the
 operation of the gateway.
 """
 
-__version__ = "1.0.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("djicot")
+except PackageNotFoundError:
+    from pathlib import Path
+
+    __version__ = Path(__file__).resolve().parent.joinpath("VERSION").read_text(encoding="utf-8").strip()
 
 from .constants import (  # NOQA
     DEFAULT_FEED_URL,
+    DEFAULT_TEXT_FEED_URL,
+    DEFAULT_BINARY_PORT,
+    DEFAULT_TEXT_PORT,
     DEFAULT_COT_TYPE,
     DEFAULT_SENSOR_LAT,
     DEFAULT_SENSOR_LON,
@@ -45,9 +55,23 @@ from .constants import (  # NOQA
     DEFAULT_SENSOR_SN,
     DEFAULT_READ_BYTES,
     DEFAULT_BREAD_CRUMBS_ENABLED,
-    DEFAULT_HIDE_INVALID_DATA
+    DEFAULT_HIDE_INVALID_DATA,
 )
 
-from .functions import create_tasks, xml_to_cot, handle_frame  # NOQA
+from .functions import (  # NOQA
+    create_tasks,
+    xml_to_cot,
+    handle_frame,
+    handle_text_line,
+    handle_parsed_data,
+)
 
-from .classes import DJIWorker, NetWorker  # NOQA
+from .classes import (  # NOQA
+    DJIWorker,
+    BinaryNetWorker,
+    TextNetWorker,
+    FileReplayWorker,
+    NetWorker,
+)
+
+from .text_parser import parse_text_line  # NOQA

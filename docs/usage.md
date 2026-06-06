@@ -44,3 +44,21 @@ WantedBy=default.target
 ```
 
 > Pay special attention to the `ExecStart` line above. You'll need to provide the full local filesystem path to both your djicot executable & djicot configuration files.
+
+## Local evaluation with AntSDR
+
+1. Copy `example-config.ini` and set `FEED_URL` to your AntSDR IP:
+   - Binary feed: `tcp://192.168.1.10:41030`
+   - Text CSV feed: `tcp://192.168.1.10:52002`
+2. Set `SENSOR_LAT` / `SENSOR_LON` for range-only detections.
+3. Run offline tests: `make test_cov`
+4. Run hardware smoke tests (requires live AntSDR):
+
+```bash
+export ANTSDR_HOST=192.168.1.10
+make test_hardware
+```
+
+5. Run live against TAK: `djicot -c example-config.ini`
+
+Capture text or binary samples from AntSDR and add trimmed lines to `tests/data/` for regression fixtures.
